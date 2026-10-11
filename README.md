@@ -12,7 +12,7 @@ The backend enforces the rules and owns the data; the frontend only shows what t
 
 - Node.js 22.12 or later (`.nvmrc` pins major version 22; Vite 8 and Vitest 5 need at least 22.12).
 - npm 10 (ships with Node 22).
-- `better-sqlite3` installs a prebuilt binary on Windows, macOS, and Linux x64/arm64. On other platforms npm compiles it, which needs Python and a C++ toolchain.
+- Internet access to GitHub during `npm install`: `better-sqlite3` downloads a prebuilt binary for your platform and Node version from its GitHub releases. If none matches, npm compiles it instead, which needs Python and a C++ toolchain (on Windows, Visual Studio with the "Desktop development with C++" workload).
 
 ### Install
 
