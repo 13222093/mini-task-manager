@@ -4,12 +4,24 @@ import express from "express";
 import { fileURLToPath } from "node:url";
 import { createApp } from "./app";
 import { openAppDatabase } from "./db/connection";
+import { seedDemoTasks } from "./demoSeed";
+import { createTasksService } from "./services/tasksService";
 
 // Cloud Run passes the port in PORT and uses 8080 by default.
 const PORT = Number(process.env.PORT ?? 8080);
 const FRONTEND_DIST = fileURLToPath(new URL("../../frontend/dist", import.meta.url));
 
 const db = openAppDatabase();
+
+// For the hosted demo, whose database starts empty after every restart.
+// listTasks() skips deleted tasks, so "empty" means no task a visitor would see.
+if (process.env.DEMO_SEED === "1") {
+  const service = createTasksService(db);
+  if (service.listTasks().length === 0) {
+    seedDemoTasks(service);
+    console.log("DEMO_SEED=1 and no tasks found: created the demo tasks");
+  }
+}
 
 const app = express();
 // The frontend calls /api/... In development the Vite proxy strips /api;
