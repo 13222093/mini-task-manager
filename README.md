@@ -1,5 +1,7 @@
 # Mini Task Manager
 
+**Live demo:** _URL added after the first deploy._ It runs on Cloud Run, resets whenever the instance restarts, and has no authentication, so anyone can act as any of the three users; for the real setup, run it locally.
+
 ## What it does
 
 A single-page task list where each task moves forward through `to_do`, `pending`, `in_progress`, and `done`, one step at a time.
@@ -58,6 +60,64 @@ npm run seed
 
 Creates three tasks through the service layer and moves them to `pending`, `in_progress`, and `done` with different users, then prints the audit log. Running it again adds three more tasks. To start from an empty database, stop the backend and delete `backend/data/app.db` (audit rows cannot be deleted with SQL, see below).
 
+## Production build and deploy
+
+In production one server handles both parts: `backend/src/serve.ts` serves the API under `/api` and the built frontend from `frontend/dist`, on port `PORT` or 8080.
+
+### Run it locally
+
+```bash
+npm run build
+```
+
+```bash
+npm run start
+```
+
+Open http://localhost:8080. `npm run start` uses the same `backend/data/app.db` as `npm run dev`.
+
+`DEMO_SEED=1` makes `serve.ts` create the three seed tasks at startup when the task list is empty. It is meant for the container, whose database starts empty after every restart; run locally, it seeds your development database. In bash:
+
+```bash
+DEMO_SEED=1 npm run start
+```
+
+In Windows PowerShell:
+
+```powershell
+$env:DEMO_SEED="1"; npm run start
+```
+
+### Docker
+
+```bash
+docker build -t mini-task-manager .
+```
+
+```bash
+docker run --rm -p 8080:8080 -e DEMO_SEED=1 mini-task-manager
+```
+
+Open http://localhost:8080. Both commands are the same in bash and PowerShell. The image is 92 MB compressed (383 MB on disk).
+
+### Deploy to Cloud Run
+
+Prerequisites: the gcloud CLI signed in with `gcloud auth login`, and a Google Cloud project with billing enabled, selected with `gcloud config set project PROJECT_ID`.
+
+Enable the APIs once:
+
+```bash
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+```
+
+Deploy from the repository root:
+
+```bash
+gcloud run deploy mini-task-manager --source . --region asia-southeast2 --allow-unauthenticated --max-instances 1 --min-instances 0 --set-env-vars DEMO_SEED=1
+```
+
+`--source .` builds the Dockerfile with Cloud Build, stores the image in Artifact Registry, and deploys it to Cloud Run in Jakarta. `--allow-unauthenticated` makes it public. `--min-instances 0` lets it scale to zero, so no instance is billed while it is idle. Cloud Run sends requests to port 8080, which is the default in `serve.ts`. Why there is at most one instance, and what happens to the data, is under Trade-offs.
+
 ## Architecture
 
 ```
@@ -69,16 +129,21 @@ backend/src/
   services/        use cases; each mutation runs in one db.transaction
   routes/          parse X-Actor and body, call the service, map errors to HTTP
   app.ts           builds the Express app around a given database (used by tests)
-  server.ts        opens backend/data/app.db and listens on port 3001
+  server.ts        development entry: opens backend/data/app.db and listens on port 3001
+  serve.ts         production entry: the API under /api plus frontend/dist, on PORT or 8080
   seed.ts          seed script
+  demoSeed.ts      the demo tasks, used by seed.ts and by serve.ts when DEMO_SEED=1
 backend/test/      vitest + supertest
 frontend/src/
   api/client.ts    typed fetch wrapper
   components/      actor select, create form, task table and row, status badge, history panel
   App.tsx          holds the actor, the task list, and the history refresh counter
+Dockerfile         builds the frontend, then runs serve.ts with tsx as the non-root node user
 ```
 
 `shared` is TypeScript source with no build step. tsx, Vite, Vitest, and tsc all resolve it through the npm workspace link. The zod schemas are exported from `@task-manager/shared/schemas`, separate from the main entry, so the frontend does not load zod.
+
+The frontend always calls `/api/...`. In development the Vite proxy strips `/api` before forwarding to port 3001; in production `serve.ts` mounts the API under `/api`. Either way the API itself sees `/tasks...`, so both setups present the same paths. For the same reason, the JSON 404 for an unknown API path shows the path without the `/api` prefix in both.
 
 ### A status change request, step by step
 
@@ -138,13 +203,15 @@ Every error has this body:
 - **The frontend refetches the whole list** after every mutation instead of patching local state. One extra request per action, but the table always shows what the server has.
 - **No `@vitejs/plugin-react`.** Vite compiles TSX using the `jsx` setting in tsconfig. The cost is a full page reload on save instead of React Fast Refresh.
 - **Shared has no build step.** Less tooling, but every consumer must be able to compile TypeScript, and the package cannot be published as is.
+- **tsx at runtime instead of a compiled build.** The container runs `serve.ts` with tsx, the same way development does. That keeps one code path for both, keeps the `import.meta.url` paths to `schema.sql` and `backend/data` valid, and avoids a build step for `shared`. The cost is that TypeScript is compiled on every start, and the image carries tsx and esbuild as runtime dependencies.
+- **SQLite on the container's in-memory disk, one instance.** On Cloud Run the database file lives on the instance's in-memory filesystem, so a second instance would have its own separate data. `--max-instances 1` keeps it to one. The data resets whenever the instance restarts or scales to zero, and `DEMO_SEED=1` recreates the demo tasks. `--max-instances 1` is not a hard limit: during a deploy or a traffic spike two instances can briefly run, each with its own SQLite file.
 
 ## What I would improve with more time
 
 In priority order. The first two close the gaps in the answers below; the rest are cleanup.
 
 1. **Authentication.** Take the actor from a session instead of the `X-Actor` header. Until then the audit log records who the client claims to be, not who acted.
-2. **PostgreSQL with migrations.** Replace SQLite and the schema-on-boot file, give the app a database role without UPDATE or DELETE on `audit_logs`, and add a real concurrency test for the `STALE_STATUS` guard, which cannot trigger today.
+2. **PostgreSQL with migrations.** Replace SQLite and the schema-on-boot file, give the app a database role without UPDATE or DELETE on `audit_logs`, and add a real concurrency test for the `STALE_STATUS` guard, which cannot trigger today. It would also let the hosted demo keep its data and run more than one instance.
 3. **Tamper evidence.** Store a hash of the previous audit row in each row, so a change made with direct database access can be detected even if it cannot be prevented.
 4. **One source for statuses.** A test that compares the SQL CHECK lists with the shared constants, so adding a status cannot update one and miss the other.
 5. **Frontend tests** for the row states: request in flight, 409 response, and history refresh.
