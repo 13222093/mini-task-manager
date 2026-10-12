@@ -1,6 +1,6 @@
 # Mini Task Manager
 
-**Live demo:** _URL added after the first deploy._ It runs on Cloud Run, resets whenever the instance restarts, and has no authentication, so anyone can act as any of the three users; for the real setup, run it locally.
+**Live demo:** <https://mini-task-manager-844260334143.asia-southeast2.run.app>. It runs on Cloud Run, resets whenever the instance restarts, and has no authentication, so anyone can act as any of the three users; for the real setup, run it locally.
 
 ## What it does
 
