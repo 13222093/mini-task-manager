@@ -141,18 +141,48 @@ Every error has this body:
 
 ## What I would improve with more time
 
-- Real authentication, with the actor taken from the session instead of a header.
-- Pagination for `GET /tasks` and the audit log.
-- A production setup: compile the backend, build the frontend, and serve both from one process. Today only the dev setup exists.
-- Schema migrations instead of an idempotent schema file.
-- Generate the SQL CHECK lists from the shared constants, or add a test that compares them.
-- Frontend tests for row states: in-flight, 409, and history refresh.
-- Tamper evidence for the audit log, for example each row storing a hash of the previous one.
+In priority order. The first two close the gaps in the answers below; the rest are cleanup.
+
+1. **Authentication.** Take the actor from a session instead of the `X-Actor` header. Until then the audit log records who the client claims to be, not who acted.
+2. **PostgreSQL with migrations.** Replace SQLite and the schema-on-boot file, give the app a database role without UPDATE or DELETE on `audit_logs`, and add a real concurrency test for the `STALE_STATUS` guard, which cannot trigger today.
+3. **Tamper evidence.** Store a hash of the previous audit row in each row, so a change made with direct database access can be detected even if it cannot be prevented.
+4. **One source for statuses.** A test that compares the SQL CHECK lists with the shared constants, so adding a status cannot update one and miss the other.
+5. **Frontend tests** for the row states: request in flight, 409 response, and history refresh.
+6. **Pagination** for `GET /tasks` and the audit log, once lists get long.
 
 ## Answers to the four questions in the brief
 
-_To be written._
+### How do you make sure the audit log cannot be modified?
+
+Four layers, from the API down to the database, each covered by a test in `backend/test/auditLogInvariants.test.ts`.
+
+1. **No way in through the app.** No route updates or deletes an audit row, and `auditLogsRepo` only inserts and lists.
+2. **Never out of sync.** Each audit row is written in the same `db.transaction` as the task change it describes. If either write fails, both roll back. The test forces the audit insert to fail and checks that the task row is unchanged.
+3. **Blocked in the database.** `BEFORE UPDATE` and `BEFORE DELETE` triggers abort any change to `audit_logs`, including raw SQL on the app's own connection. `PRAGMA recursive_triggers = ON` closes the `INSERT OR REPLACE` gap, and a CHECK constraint rejects rows whose shape does not match their event.
+4. **Safe from task deletion.** Deleting a task is a soft delete, and `audit_logs.task_id` uses `ON DELETE RESTRICT`, so even a hard delete of a task with history fails. Each row stores the task title at that moment, so history still reads correctly after the task is gone.
+
+What this does not cover: someone with access to the database file can drop the triggers first. These layers prevent changes through the application; they do not detect changes made around it. Item 3 in the improvement list is the detection half.
+
+### Which part is riskiest with many users?
+
+The actor. `X-Actor` is a header the client sets, and the backend only checks that it is one of three names. With many users, anyone can act as anyone, and the audit log will record the wrong person without any sign that it is wrong. The feature exists to answer "who changed what", so a false answer is worse than no answer. That is why authentication is first in the improvement list.
+
+Concurrency is handled correctly today, but only because there is one writer. If two users move the same task from `pending` to `in_progress` at the same moment, better-sqlite3 runs the requests one after the other: the first changes the status and writes the log, the second sees `in_progress` already and returns 200 with `changed: false`, writing nothing. The cost of that safety is throughput, since every query blocks the event loop. After that, the unpaginated lists and the full refetch after every action make load grow with both users and tasks.
+
+### If this grew into a large system, what would you refactor first, and why?
+
+The persistence layer, from SQLite with synchronous transactions to PostgreSQL. It comes first because every guarantee in this app depends on it: atomic writes rely on synchronous `db.transaction` functions, immutability relies on SQLite triggers, and the concurrency guard is untestable with one connection. Moving to Postgres makes transactions explicit and async, turns the `STALE_STATUS` guard into live code that needs real tests, allows a database role without UPDATE or DELETE on the audit table, and brings migrations, since changing an existing table is not possible today.
+
+It is contained: all SQL already lives in `repositories/`, so the change stays inside `db/`, `repositories/`, and the transaction boundaries in `services/`. Routes, shared rules, and the frontend do not change.
+
+Authentication is the bigger risk, but it is an addition behind the existing `X-Actor` seam, not a refactor of what exists.
 
 ## AI usage
 
-_To be written._
+**Design.** Before writing code I worked through the design in a conversation with Claude: the status rules, how to reconcile "delete task" with "audit logs can never be deleted", the audit event model, the six invariants, the API and error contract, and the folder layout. I turned it into a written spec. The decisions came out of that discussion; I kept the ones I could defend and I can explain each.
+
+**Implementation.** Claude Code wrote most of the code from that spec, in phases: scaffold, shared rules, backend, tests, frontend, README. It stopped after each phase so I could review the diff before continuing.
+
+**How I validated it.**
+
+**What the AI got wrong and how I caught it.**
