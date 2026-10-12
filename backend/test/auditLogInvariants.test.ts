@@ -93,6 +93,33 @@ describe("invariant 3: audit rows cannot be updated or deleted", () => {
   });
 });
 
+describe("audit row shape: each event allows only its own from and to statuses", () => {
+  it.each([
+    ["created with a from status", "created", "to_do", "to_do"],
+    ["created with a to status other than to_do", "created", null, "pending"],
+    ["status_changed without a from status", "status_changed", null, "pending"],
+    ["status_changed without a to status", "status_changed", "to_do", null],
+    ["deleted without a from status", "deleted", null, null],
+    ["deleted with a to status", "deleted", "pending", "in_progress"],
+  ] as const)("rejects %s", async (_label, event, fromStatus, toStatus) => {
+    const task = await createTask(app);
+    const auditLogs = createAuditLogsRepo(db);
+
+    expect(() =>
+      auditLogs.insert({
+        taskId: task.id,
+        taskTitle: task.title,
+        event,
+        fromStatus,
+        toStatus,
+        actor: "john.doe",
+        createdAt: new Date().toISOString(),
+      }),
+    ).toThrow("CHECK constraint failed");
+    expect(countAuditRows(db)).toBe(1);
+  });
+});
+
 describe("invariant 4: deleting a task never removes its audit rows", () => {
   it("blocks a hard delete of a task that has audit rows", async () => {
     const task = await createTask(app);
@@ -101,6 +128,26 @@ describe("invariant 4: deleting a task never removes its audit rows", () => {
       "FOREIGN KEY constraint failed",
     );
     expect(countAuditRows(db)).toBe(1);
+  });
+});
+
+describe("task title snapshot", () => {
+  it("keeps the title each audit row was written with, also after the task is deleted", async () => {
+    const task = await createTask(app, "Prepare Invoice");
+    await putStatus(app, task.id, "pending");
+    // There is no rename endpoint, so change the title in SQL to simulate one.
+    db.prepare("UPDATE tasks SET title = 'Prepare Invoice v2' WHERE id = ?").run(task.id);
+    await putStatus(app, task.id, "in_progress");
+    await request(app).delete(`/tasks/${task.id}`).set("X-Actor", "john.doe");
+
+    const logs: AuditLog[] = (await request(app).get(`/tasks/${task.id}/audit-logs`)).body;
+
+    expect(logs.map((log) => [log.event, log.taskTitle])).toEqual([
+      ["created", "Prepare Invoice"],
+      ["status_changed", "Prepare Invoice"],
+      ["status_changed", "Prepare Invoice v2"],
+      ["deleted", "Prepare Invoice v2"],
+    ]);
   });
 });
 
