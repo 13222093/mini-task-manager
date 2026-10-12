@@ -48,7 +48,7 @@ npm test
 npm run typecheck
 ```
 
-Tests use a fresh in-memory database per test. Shared logic tests are in `backend/test/shared/`, endpoint tests in `backend/test/tasksApi.test.ts`, and one test per audit invariant in `backend/test/auditLogInvariants.test.ts`.
+Tests use a fresh in-memory database per test. Shared logic tests are in `backend/test/shared/`, endpoint tests in `backend/test/tasksApi.test.ts`, and the audit log guarantees (atomic writes, append-only rows, row shape, title snapshot, status consistency, ordering) in `backend/test/auditLogInvariants.test.ts`.
 
 ### Seed
 
@@ -154,7 +154,7 @@ In priority order. The first two close the gaps in the answers below; the rest a
 
 ### How do you make sure the audit log cannot be modified?
 
-Four layers, from the API down to the database, each covered by a test in `backend/test/auditLogInvariants.test.ts`.
+Four layers, from the API down to the database. Layers 2 to 4 are covered by tests in `backend/test/auditLogInvariants.test.ts`; layer 1 is checked by reading the code, since a test cannot show that a code path is absent.
 
 1. **No way in through the app.** No route updates or deletes an audit row, and `auditLogsRepo` only inserts and lists.
 2. **Never out of sync.** Each audit row is written in the same `db.transaction` as the task change it describes. If either write fails, both roll back. The test forces the audit insert to fail and checks that the task row is unchanged.
@@ -171,9 +171,9 @@ Concurrency is handled correctly today, but only because there is one writer. If
 
 ### If this grew into a large system, what would you refactor first, and why?
 
-The persistence layer, from SQLite with synchronous transactions to PostgreSQL. It comes first because every guarantee in this app depends on it: atomic writes rely on synchronous `db.transaction` functions, immutability relies on SQLite triggers, and the concurrency guard is untestable with one connection. Moving to Postgres makes transactions explicit and async, turns the `STALE_STATUS` guard into live code that needs real tests, allows a database role without UPDATE or DELETE on the audit table, and brings migrations, since changing an existing table is not possible today.
+The persistence layer, from SQLite with synchronous transactions to PostgreSQL. It comes first because every guarantee in this app depends on it: atomic writes rely on synchronous `db.transaction` functions, immutability relies on SQLite triggers, and the concurrency guard is untestable with one connection. Moving to Postgres makes transactions explicit and async, turns the `STALE_STATUS` guard into live code that needs real tests, allows a database role without UPDATE or DELETE on the audit table, and brings migrations, since today there is no step for changing an existing table.
 
-It is contained: all SQL already lives in `repositories/`, so the change stays inside `db/`, `repositories/`, and the transaction boundaries in `services/`. Routes, shared rules, and the frontend do not change.
+It is mostly contained: all queries already live in `repositories/`, so most of the change stays inside `db/`, `repositories/`, and the transaction boundaries in `services/`. The routes change only mechanically: with an async database the service functions return promises, so every handler has to await them. The tests that read the database directly through better-sqlite3 need rewriting too. Shared rules and the frontend do not change.
 
 Authentication is the bigger risk, but it is an addition behind the existing `X-Actor` seam, not a refactor of what exists.
 
@@ -181,7 +181,7 @@ Authentication is the bigger risk, but it is an addition behind the existing `X-
 
 **Design.** Before writing code I worked through the design in a conversation with Claude: the status rules, how to reconcile "delete task" with "audit logs can never be deleted", the audit event model, the six invariants, the API and error contract, and the folder layout. I turned it into a written spec. The decisions came out of that discussion; I kept the ones I could defend and I can explain each.
 
-**Implementation.** Claude Code wrote most of the code from that spec, in phases: scaffold, shared rules, backend, tests, frontend, README. It stopped after each phase so I could review the diff before continuing.
+**Implementation.** Claude Code wrote most of the code from that spec, in phases: scaffold, shared rules, backend, tests, frontend, README. The spec said to stop after each phase for review, but early in the first phase I told it to run through all of them without stopping. For the deployment work it did stop after each phase.
 
 **How I validated it.**
 
