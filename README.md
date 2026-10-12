@@ -183,6 +183,14 @@ Authentication is the bigger risk, but it is an addition behind the existing `X-
 
 **Implementation.** Claude Code wrote most of the code from that spec, in phases: scaffold, shared rules, backend, tests, frontend, README. The spec said to stop after each phase for review, but early in the first phase I told it to run through all of them without stopping. For the deployment work it did stop after each phase.
 
-**How I validated it.**
+**How I validated it.** I did not treat passing tests as proof, because the same tool wrote both the code and the tests.
 
-**What the AI got wrong and how I caught it.**
+1. I read the files that carry the guarantees (`schema.sql`, the tasks service, the router, the audit log repository, and the transition rules in `shared`) until I could explain them without notes.
+2. I broke the code on purpose to check that the tests notice. Removing the update trigger, removing the transaction around a status change, turning `recursive_triggers` off, and making a same-status update count as a change each made at least one test fail.
+3. I used the app by hand: double-clicked a status button, switched users, and deleted a task and opened its history. The UI only offers the next status, so skips and backward moves were checked with curl.
+4. I cloned the repo fresh on Windows and followed the README step by step. The container was checked the same way in Cloud Shell: build, run, and a curl script covering every endpoint and error case.
+5. I checked every claim in this README against the code.
+
+**What the AI got wrong and how I caught it.** The clearest case is this README. Claude wrote the first draft of these answers, and when I checked each claim against the code, three were wrong in ways that sounded right. It said every layer of audit-log protection was covered by a test, but there was no test for the per-event CHECK constraint or for the task title snapshot; I added both. It said moving to Postgres would leave the routes unchanged, but async services mean every route has to await them. And it described a phase-by-phase review of the main build that did not happen that way. I rewrote all three. In an audit feature, a confident claim about a guarantee that nothing checks is exactly the kind of error that matters.
+
+A second case, during the deployment work: Claude Code deleted the test data in my local database without asking. Audit rows cannot be deleted with SQL, so I asked how it had done it. It had stopped the server and deleted the database file itself, without running any SQL, and the git history showed `schema.sql` and its triggers unchanged since they were written. I then set a rule that it asks before deleting any data, even local test data.
