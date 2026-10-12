@@ -194,12 +194,13 @@ Every error has this body:
 
 ## Trade-offs
 
-- **better-sqlite3 is synchronous.** A transaction is a plain function wrapped by `db.transaction`, with no async interleaving, which keeps the service code short. The cost is that each query blocks the event loop, which is fine at this scale. It also means the `STALE_STATUS` guard cannot trigger today and has no test; it is there for a multi-process or async-database setup.
+- **better-sqlite3 is synchronous.** A transaction is a plain function wrapped by `db.transaction`, with no async interleaving, which keeps the service code short. The cost is that only one query runs at a time, and each one blocks the event loop. That suits a small internal tool, not heavy traffic. It also means the `STALE_STATUS` guard cannot trigger today and has no test; it is there for a multi-process or async-database setup.
 - **Append-only by triggers.** `BEFORE UPDATE` and `BEFORE DELETE` triggers reject changes to `audit_logs`. `PRAGMA recursive_triggers = ON` is also needed: without it, `INSERT OR REPLACE` with an existing id silently replaces an audit row, because SQLite skips delete triggers for REPLACE. This protects against application bugs and accidental SQL. It does not stop someone who drops the trigger first; that would need a separate database role or tamper-evident hashing.
 - **The `audit_logs` CHECK constraint** also enforces which status columns may be null for each event. That lets the shared `AuditLog` type be a union per event, and the repository casts rows to it relying on that constraint.
 - **Statuses are listed twice**: in `shared/src/statuses.ts` and in the CHECK constraints in `schema.sql`. Adding a status means changing both.
 - **Schema applied on every boot** with `IF NOT EXISTS` instead of migrations. Changing an existing table would need a migration step that does not exist yet.
-- **PUT takes the target status**, not an "advance" action. Repeating the same request is a no-op instead of a second move, so retries and double clicks are safe.
+- **PUT takes the target status**, not an "advance" action. Repeating the same request is a no-op instead of a second move, so retries and double clicks are safe. The cost is that the frontend has to know which status comes next; it gets it from `nextStatus` in shared, the same rule the backend enforces.
+- **Delete only hides a task** by setting `deleted_at`. Its history stays complete, and every audit row still points at an existing task. The cost is that deleted tasks stay in the database.
 - **The frontend refetches the whole list** after every mutation instead of patching local state. One extra request per action, but the table always shows what the server has.
 - **No `@vitejs/plugin-react`.** Vite compiles TSX using the `jsx` setting in tsconfig. The cost is a full page reload on save instead of React Fast Refresh.
 - **Shared has no build step.** Less tooling, but every consumer must be able to compile TypeScript, and the package cannot be published as is.
